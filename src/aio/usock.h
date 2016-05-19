@@ -37,6 +37,9 @@
 #define NN_USOCK_ACCEPT_ERROR 6
 #define NN_USOCK_STOPPED 7
 #define NN_USOCK_SHUTDOWN 8
+/* see also nn_usock_type_strtab[] */
+
+const char *nn_getstr_usock_type(int type);
 
 /*  Maximum number of iovecs that can be passed to nn_usock_send function. */
 #define NN_USOCK_MAX_IOVCNT 3
@@ -66,6 +69,8 @@ int nn_usock_setsockopt (struct nn_usock *self, int level, int optname,
 int nn_usock_bind (struct nn_usock *self, const struct sockaddr *addr,
     size_t addrlen);
 int nn_usock_listen (struct nn_usock *self, int backlog);
+
+void nn_usock_init_from_fd (struct nn_usock *self, int s);
 
 /*  Accept a new connection from a listener. When done, NN_USOCK_ACCEPTED
     event will be delivered to the accepted socket. To cancel the operation,

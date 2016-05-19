@@ -83,8 +83,9 @@ int nn_timerset_timeout (struct nn_timerset *self)
 {
     int timeout;
 
-    if (nn_fast (nn_list_empty (&self->timeouts)))
-        return -1;
+    if (nn_fast (nn_list_empty (&self->timeouts))) {
+      return 5; // -1;
+    }
 
     timeout = (int) (nn_cont (nn_list_begin (&self->timeouts),
         struct nn_timerset_hndl, list)->timeout - nn_clock_now (&self->clock));

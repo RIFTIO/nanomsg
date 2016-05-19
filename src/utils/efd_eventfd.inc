@@ -57,22 +57,35 @@ nn_fd nn_efd_getfd (struct nn_efd *self)
     return self->efd;
 }
 
+extern int (*rw_direct_cb)(int fd);
+
 void nn_efd_signal (struct nn_efd *self)
 {
     const uint64_t one = 1;
     ssize_t nbytes;
 
-    nbytes = write (self->efd, &one, sizeof (one));
-    errno_assert (nbytes == sizeof (one));
+    errno_assert (self->efd < NN_EVENTFD_DIRECT_OFFSET);
+
+    if (!(self->efd < NN_EVENTFD_DIRECT_OFFSET &&
+          rw_direct_cb &&
+          (*rw_direct_cb)(self->efd))) {
+      nbytes = write (self->efd, &one, sizeof (one));
+      errno_assert (nbytes == sizeof (one));
+    }
 }
 
 void nn_efd_unsignal (struct nn_efd *self)
 {
     uint64_t count;
 
-    /*  Extract all the signals from the eventfd. */
-    ssize_t sz = read (self->efd, &count, sizeof (count));
-    errno_assert (sz >= 0);
-    nn_assert (sz == sizeof (count));
-}
+    errno_assert (self->efd < NN_EVENTFD_DIRECT_OFFSET);
 
+    if (!(self->efd < NN_EVENTFD_DIRECT_OFFSET &&
+          rw_direct_cb &&
+          (*rw_direct_cb)(self->efd+NN_EVENTFD_DIRECT_OFFSET))) {
+      /*  Extract all the signals from the eventfd. */
+      ssize_t sz = read (self->efd, &count, sizeof (count));
+      errno_assert (sz >= 0);
+      nn_assert (sz == sizeof (count));
+    }
+}

@@ -38,11 +38,9 @@ else ()
 endif ()
 
 #  Build the library itself.
-
-add_subdirectory (src)
+rift_add_subdirs(SUBDIR_LIST src)
 
 #  Build the tools
-
 add_executable (nanocat tools/nanocat.c tools/options.c)
 target_link_libraries (nanocat nanomsg)
 

@@ -21,6 +21,8 @@
     IN THE SOFTWARE.
 */
 
+#include <poll.h>
+
 #include "ctx.h"
 
 #include "../utils/err.h"
@@ -28,7 +30,10 @@
 #include "../utils/cont.h"
 #include "../utils/attr.h"
 
+struct nn_worker *global_nn_worker;
+
 /*  Private functions. */
+static int nn_worker_runloop(struct nn_worker *self, int use_timeout);
 static void nn_worker_routine (void *arg);
 
 void nn_worker_fd_init (struct nn_worker_fd *self, int src,
@@ -105,6 +110,8 @@ int nn_worker_init (struct nn_worker *self)
     if (rc < 0)
         return rc;
 
+    nn_global_get_riftconfig(&self->riftconfig);
+
     nn_mutex_init (&self->sync);
     nn_queue_init (&self->tasks);
     nn_queue_item_init (&self->stop);
@@ -112,7 +119,13 @@ int nn_worker_init (struct nn_worker *self)
     nn_poller_add (&self->poller, nn_efd_getfd (&self->efd), &self->efd_hndl);
     nn_poller_set_in (&self->poller, &self->efd_hndl);
     nn_timerset_init (&self->timerset);
-    nn_thread_init (&self->thread, nn_worker_routine, self);
+
+    if (self->riftconfig.singlethread) {
+      nn_assert(NULL == global_nn_worker);
+      global_nn_worker = self;
+    } else {
+      nn_thread_init (&self->thread, nn_worker_routine, self);
+    }
 
     return 0;
 }
@@ -125,8 +138,14 @@ void nn_worker_term (struct nn_worker *self)
     nn_efd_signal (&self->efd);
     nn_mutex_unlock (&self->sync);
 
-    /*  Wait till worker thread terminates. */
-    nn_thread_term (&self->thread);
+    if (self->riftconfig.singlethread) {
+      nn_assert(NULL != global_nn_worker);
+      nn_worker_runloop(global_nn_worker,0);
+      global_nn_worker = NULL;
+    } else {
+      /*  Wait till worker thread terminates. */
+      nn_thread_term (&self->thread);
+    }
 
     /*  Clean up. */
     nn_timerset_term (&self->timerset);
@@ -145,10 +164,24 @@ void nn_worker_execute (struct nn_worker *self, struct nn_worker_task *task)
     nn_mutex_unlock (&self->sync);
 }
 
-static void nn_worker_routine (void *arg)
+void nn_worker_getfdto(int *fd, int *events, int *timeo) {
+  nn_assert(NULL != global_nn_worker);
+  struct nn_worker *self = global_nn_worker;
+
+  if (timeo) {
+    *timeo = nn_timerset_timeout (&self->timerset);
+  }
+  if (events) {
+    *events = POLLIN;
+  } 
+  if (fd) {
+    *fd = self->poller.ep;
+  }
+}
+
+static int nn_worker_runloop(struct nn_worker *self, int use_timeout)
 {
     int rc;
-    struct nn_worker *self;
     int pevent;
     struct nn_poller_hndl *phndl;
     struct nn_timerset_hndl *thndl;
@@ -158,16 +191,30 @@ static void nn_worker_routine (void *arg)
     struct nn_worker_fd *fd;
     struct nn_worker_timer *timer;
 
-    self = (struct nn_worker*) arg;
+    /*  Wait for new events and/or timeouts. */
 
-    /*  Infinite loop. It will be interrupted only when the object is
-        shut down. */
-    while (1) {
+    int timeo = (use_timeout ? nn_timerset_timeout (&self->timerset) : 0);
+    if (self->riftconfig.singlethread)  {
 
-        /*  Wait for new events and/or timeouts. */
-        rc = nn_poller_wait (&self->poller,
-            nn_timerset_timeout (&self->timerset));
+  fprintf(stderr, "riftconfig.singlethread!!!\n");
+
+#ifndef NN_USE_EPOLL
+#error NN Rift singlethread mode relies on epoll
+#endif
+      nn_assert(self->riftconfig.waitfunc);
+      int revents = POLLIN;
+      if (timeo) {
+        /* Block here, waiting for an event on the epoll fd or a timeout. */
+        revents = self->riftconfig.waitfunc(self->poller.ep, POLLIN, timeo);
+      }
+      if (revents & POLLIN) {
+        rc = nn_poller_wait (&self->poller, 0);
         errnum_assert (rc == 0, -rc);
+      }
+    } else {
+      rc = nn_poller_wait (&self->poller, timeo);
+      errnum_assert (rc == 0, -rc);
+    }
 
         /*  Process all expired timers. */
         while (1) {
@@ -213,7 +260,7 @@ static void nn_worker_routine (void *arg)
                     /*  If the worker thread is asked to stop, do so. */
                     if (nn_slow (item == &self->stop)) {
                         nn_queue_term (&tasks);
-                        return;
+                        return 1;
                     }
 
                     /*  It's a user-defined task. Notify the user that it has
@@ -234,6 +281,28 @@ static void nn_worker_routine (void *arg)
             nn_fsm_feed (fd->owner, fd->src, pevent, fd);
             nn_ctx_leave (fd->owner->ctx);
         }
+    
+        return 0;
+}
+
+static void nn_worker_routine (void *arg)
+{
+  int shutdown = 0;
+  struct nn_worker *self;
+
+  self = (struct nn_worker*) arg;
+
+    /*  Infinite loop. It will be interrupted only when the object is
+        shut down. */
+    while (!shutdown) {
+       shutdown = nn_worker_runloop(self,1);
     }
 }
+
+void nn_run_worker(void)
+{
+    nn_assert(NULL != global_nn_worker);
+    nn_worker_runloop(global_nn_worker,0);
+}
+
 

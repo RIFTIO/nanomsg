@@ -83,8 +83,9 @@
 #include <unistd.h>
 #endif
 
-/*  Max number of concurrent SP sockets. */
-#define NN_MAX_SOCKETS 512
+/*  Max number of concurrent SP sockets.  Note that each takes three
+    real descriptors: two eventfds plus a real socket. */
+#define NN_MAX_SOCKETS 32768     /* Silly big for collapsed model */
 
 /*  To save some space, list of unused socket slots uses uint16_t integers to
     refer to individual sockets. If there's a need to more that 0x10000 sockets,
@@ -137,7 +138,7 @@ struct nn_global {
     struct nn_ctx ctx;
     struct nn_fsm fsm;
     int state;
-    struct nn_timer stat_timer;
+    //RIFT-7875 struct nn_timer stat_timer;
 
     int print_errors;
     int print_statistics;
@@ -148,13 +149,14 @@ struct nn_global {
     /*  Application name for statistics  */
     char hostname[64];
     char appname[64];
+
+  struct nn_riftconfig riftconfig;
 };
 
 /*  Singleton object containing the global state of the library. */
 static struct nn_global self = {0};
 
 /*  Context creation- and termination-related private functions. */
-static void nn_global_init (void);
 static void nn_global_term (void);
 
 /*  Transport-related private functions. */
@@ -186,7 +188,9 @@ const char *nn_strerror (int errnum)
     return nn_err_strerror (errnum);
 }
 
-static void nn_global_init (void)
+int (*rw_direct_cb)(int fd);
+
+void nn_global_init (struct nn_riftconfig *cfg_in)
 {
     int i;
     char *envvar;
@@ -236,8 +240,15 @@ static void nn_global_init (void)
     /*  Allocate the stack of unused file descriptors. */
     self.unused = (uint16_t*) (self.socks + NN_MAX_SOCKETS);
     alloc_assert (self.unused);
-    for (i = 0; i != NN_MAX_SOCKETS; ++i)
-        self.unused [i] = NN_MAX_SOCKETS - i - 1;
+    for (i = 200; i != NN_MAX_SOCKETS; ++i) {
+        self.unused [i] = 200 + NN_MAX_SOCKETS - i - 1;
+	nn_assert(self.unused[i] >= 200);
+	nn_assert(self.unused[i] < NN_MAX_SOCKETS);
+    }
+    for (i = 0; i < 200; i++) {
+      // nope
+      self.unused[i] = 0;
+    }
 
     /*  Initialise other parts of the global state. */
     nn_list_init (&self.transports);
@@ -272,6 +283,11 @@ static void nn_global_init (void)
     nn_global_add_socktype (nn_bus_socktype);
     nn_global_add_socktype (nn_xbus_socktype);
 
+    if (cfg_in) {
+      memcpy(&self.riftconfig, cfg_in, sizeof(self.riftconfig));
+      rw_direct_cb = self.riftconfig.direct_cb;
+    }
+
     /*  Start the worker threads. */
     nn_pool_init (&self.pool);
 
@@ -281,7 +297,7 @@ static void nn_global_init (void)
     self.state = NN_GLOBAL_STATE_IDLE;
 
     nn_ctx_init (&self.ctx, nn_global_getpool (), NULL);
-    nn_timer_init (&self.stat_timer, NN_GLOBAL_SRC_STAT_TIMER, &self.fsm);
+    //RIFT-7875  nn_timer_init (&self.stat_timer, NN_GLOBAL_SRC_STAT_TIMER, &self.fsm);
     nn_fsm_start (&self.fsm);
 
     /*   Initializing special sockets.  */
@@ -360,6 +376,8 @@ static void nn_global_term (void)
     /*  This marks the global state as uninitialised. */
     self.socks = NULL;
 
+    memset(&self.riftconfig, 0, sizeof(self.riftconfig));
+
     /*  Shut down the memory allocation subsystem. */
     nn_alloc_term ();
 
@@ -425,9 +443,14 @@ int nn_global_create_socket (int domain, int protocol)
     if (nn_slow (self.nsocks >= NN_MAX_SOCKETS)) {
         return -EMFILE;
     }
-
+    
+    if (self.nsocks >= NN_MAX_SOCKETS-200) {
+        // we skipped the first 200 to avoid app code
+        return -EMFILE;
+    }
     /*  Find an empty socket slot. */
     s = self.unused [NN_MAX_SOCKETS - self.nsocks - 1];
+    nn_assert(s);
 
     /*  Find the appropriate socket type. */
     for (it = nn_list_begin (&self.socktypes);
@@ -453,6 +476,7 @@ int nn_global_create_socket (int domain, int protocol)
     return -EINVAL;
 }
 
+
 int nn_socket (int domain, int protocol)
 {
     int rc;
@@ -467,7 +491,7 @@ int nn_socket (int domain, int protocol)
     }
 
     /*  Make sure that global state is initialised. */
-    nn_global_init ();
+    nn_global_init (NULL);
 
     rc = nn_global_create_socket (domain, protocol);
 
@@ -1174,7 +1198,7 @@ static void nn_global_handler (struct nn_fsm *self,
                 if (global->print_statistics || global->statistics_socket >= 0)
                 {
                     /*  Start statistics collection timer. */
-                    nn_timer_start (&global->stat_timer, 10000);
+                    //RIFT-7875  nn_timer_start (&global->stat_timer, 10000);
                 }
                 return;
             default:
@@ -1195,12 +1219,16 @@ static void nn_global_handler (struct nn_fsm *self,
         case NN_GLOBAL_SRC_STAT_TIMER:
             switch (type) {
             case NN_TIMER_TIMEOUT:
-                nn_global_submit_statistics ();
+                // RIFT - commenting the below code because when nn_close() is
+                // called the self.socks[] can get freed and invalidated and
+                // the below function asserts when trying to acquire  a mutex on
+                // self.socks[] - RIFT-6501
+                //nn_global_submit_statistics ();
                 /*  No need to change state  */
-                nn_timer_stop (&global->stat_timer);
+                //RIFT-7875  nn_timer_stop (&global->stat_timer);
                 return;
             case NN_TIMER_STOPPED:
-                nn_timer_start (&global->stat_timer, 10000);
+                //RIFT-7875  nn_timer_start (&global->stat_timer, 10000);
                 return;
             default:
                 nn_fsm_bad_action (global->state, src, type);
@@ -1228,14 +1256,24 @@ static void nn_global_shutdown (struct nn_fsm *self,
 
     nn_assert (global->state == NN_GLOBAL_STATE_ACTIVE
         || global->state == NN_GLOBAL_STATE_IDLE);
+    /* RIFT-7875 
     if (global->state == NN_GLOBAL_STATE_ACTIVE) {
         if (!nn_timer_isidle (&global->stat_timer)) {
             nn_timer_stop (&global->stat_timer);
             return;
         }
     }
+    */
 }
 
 int nn_global_print_errors () {
     return self.print_errors;
+}
+
+void nn_global_get_riftconfig(struct nn_riftconfig *cfg_out) {
+  memcpy(cfg_out, &self.riftconfig, sizeof(*cfg_out));
+}
+
+int nn_global_singlethread() {
+  return self.riftconfig.singlethread;
 }

@@ -115,6 +115,7 @@ void nn_stcp_start (struct nn_stcp *self, struct nn_usock *usock)
 
 void nn_stcp_stop (struct nn_stcp *self)
 {
+  //  fprintf(stderr, "nn_stcp_stop()\n");
     nn_fsm_stop (&self->fsm);
 }
 
@@ -207,6 +208,8 @@ static void nn_stcp_handler (struct nn_fsm *self, int src, int type,
 
     stcp = nn_cont (self, struct nn_stcp, fsm);
 
+    //fprintf(stderr, "FSM stcp=%p (usock=%p s=%d) src=%d type=%d\n", stcp, &stcp->usock, stcp->usock->s, src, type);
+
     switch (stcp->state) {
 
 /******************************************************************************/
@@ -251,6 +254,7 @@ static void nn_stcp_handler (struct nn_fsm *self, int src, int type,
                 /* Raise the error and move directly to the DONE state.
                    streamhdr object will be stopped later on. */
                 stcp->state = NN_STCP_STATE_DONE;
+		//fprintf(stderr, "sctp.c PROTOHDR/STREAMHDR/STREAMHDR_ERROR\n");
                 nn_fsm_raise (&stcp->fsm, &stcp->done, NN_STCP_ERROR);
                 return;
 
@@ -276,6 +280,7 @@ static void nn_stcp_handler (struct nn_fsm *self, int src, int type,
                  rc = nn_pipebase_start (&stcp->pipebase);
                  if (nn_slow (rc < 0)) {
                     stcp->state = NN_STCP_STATE_DONE;
+		    //fprintf(stderr, "sctp.c STOPPING_STREAMHDR/STREAMHDR/STREAMHDR_ERROR\n");
                     nn_fsm_raise (&stcp->fsm, &stcp->done, NN_STCP_ERROR);
                     return;
                  }
@@ -364,6 +369,7 @@ static void nn_stcp_handler (struct nn_fsm *self, int src, int type,
             case NN_USOCK_ERROR:
                 nn_pipebase_stop (&stcp->pipebase);
                 stcp->state = NN_STCP_STATE_DONE;
+		//fprintf(stderr, "sctp.c ACTIVE/USOCK/USOCK_ERROR\n");
                 nn_fsm_raise (&stcp->fsm, &stcp->done, NN_STCP_ERROR);
                 return;
 
@@ -387,6 +393,7 @@ static void nn_stcp_handler (struct nn_fsm *self, int src, int type,
             switch (type) {
             case NN_USOCK_ERROR:
                 stcp->state = NN_STCP_STATE_DONE;
+		//fprintf(stderr, "sctp.c SHUTTING/USOCK/USOCK_ERROR\n");
                 nn_fsm_raise (&stcp->fsm, &stcp->done, NN_STCP_ERROR);
                 return;
             default:

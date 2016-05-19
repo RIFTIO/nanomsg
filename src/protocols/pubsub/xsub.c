@@ -168,8 +168,10 @@ static int nn_xsub_recv (struct nn_sockbase *self, struct nn_msg *msg)
         errnum_assert (rc >= 0, -rc);
         rc = nn_trie_match (&xsub->trie, nn_chunkref_data (&msg->body),
             nn_chunkref_size (&msg->body));
-        if (rc == 0)
+        if (rc == 0) {
+            nn_chunkref_term(&msg->body);
             continue;
+        }
         if (rc == 1)
             return 0;
         errnum_assert (0, -rc);

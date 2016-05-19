@@ -21,6 +21,7 @@
     IN THE SOFTWARE.
 */
 
+#include "../nn.h"
 #include "../utils/queue.h"
 #include "../utils/mutex.h"
 #include "../utils/thread.h"
@@ -49,6 +50,7 @@ struct nn_worker_task {
 };
 
 struct nn_worker {
+    struct nn_riftconfig riftconfig;
     struct nn_mutex sync;
     struct nn_queue tasks;
     struct nn_queue_item stop;

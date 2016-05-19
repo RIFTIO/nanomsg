@@ -79,6 +79,8 @@ struct nn_sock
     int eid;
 
     /*  Socket-level socket options. */
+    uint64_t rwhandshake[2];
+    int rwhandshake_len;
     int linger;
     int sndbuf;
     int rcvbuf;
@@ -93,7 +95,8 @@ struct nn_sock
     /*  Transport-specific socket options. */
     struct nn_optset *optsets [NN_MAX_TRANSPORT];
 
-    struct {
+#if 0
+    struct nn_sock_stats {
 
         /*****  The ever-incrementing counters  *****/
 
@@ -133,9 +136,14 @@ struct nn_sock
         int current_ep_errors;
 
     } statistics;
+#else
+    struct nn_sock_stats statistics;
+#endif
+    struct nn_riftclosure rw_connection_indication;
 
     /*  The socket name for statistics  */
     char socket_name[64];
+    int fd;
 };
 
 /*  Initialise the socket. */

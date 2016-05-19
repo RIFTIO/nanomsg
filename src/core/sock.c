@@ -117,6 +117,7 @@ int nn_sock_init (struct nn_sock *self, struct nn_socktype *socktype, int fd)
     self->eid = 1;
 
     /*  Default values for NN_SOL_SOCKET options. */
+    self->rwhandshake_len = 0;
     self->linger = 1000;
     self->sndbuf = 128 * 1024;
     self->rcvbuf = 128 * 1024;
@@ -148,6 +149,8 @@ int nn_sock_init (struct nn_sock *self, struct nn_socktype *socktype, int fd)
 
     /*  Should be pretty much enough space for just the number  */
     sprintf(self->socket_name, "%d", fd);
+    self->fd = fd;
+    memset(&self->rw_connection_indication, '\0', sizeof(self->rw_connection_indication));
 
     /*  The transport-specific options are not initialised immediately,
         rather, they are allocated later on when needed. */
@@ -289,6 +292,31 @@ static int nn_sock_setopt_inner (struct nn_sock *self, int level,
         return 0;
     }
 
+    if (level == NN_SOL_SOCKET) {
+        switch (option) {
+        case NN_RWHANDSHAKE:
+	  if (optvallen > sizeof(self->rwhandshake)) {
+	    return -EINVAL;
+	  }
+   	    memcpy(self->rwhandshake, optval, optvallen);
+	    self->rwhandshake_len=optvallen;
+	    return 0;
+            break;
+        case NN_RWSET_CONN_IND:
+	  if (optvallen > sizeof(self->rw_connection_indication)) {
+	    return -EINVAL;
+	  }
+   	    memcpy(&self->rw_connection_indication, optval, optvallen);
+	    return 0;
+            break;
+	    case NN_RWGET_STATS:
+	    return 0;
+            break;
+	default:
+	  break;
+	}
+    }
+
     /*  At this point we assume that all options are of type int. */
     if (optvallen != sizeof (int))
         return -EINVAL;
@@ -407,6 +435,21 @@ int nn_sock_getopt_inner (struct nn_sock *self, int level,
         case NN_IPV4ONLY:
             intval = self->ep_template.ipv4only;
             break;
+	case NN_RWHANDSHAKE:
+	  memcpy(optval, &self->rwhandshake, *optvallen < self->rwhandshake_len ? *optvallen : self->rwhandshake_len);
+	  *optvallen = self->rwhandshake_len;
+	  return 0;
+	  break;
+	case NN_RWGET_STATS:
+	  memcpy(optval, &self->statistics, *optvallen < sizeof(self->statistics) ? *optvallen : sizeof(self->statistics));
+	  *optvallen = sizeof(self->statistics);
+	  return 0;
+	  break;
+  case NN_RWSET_CONN_IND:
+	  memcpy(optval, &self->rw_connection_indication, *optvallen < sizeof(self->rw_connection_indication) ? *optvallen : sizeof(self->rw_connection_indication));
+	  *optvallen = sizeof(self->statistics);
+	  return 0;
+	  break;
         case NN_SNDFD:
             if (self->socktype->flags & NN_SOCKTYPE_FLAG_NOSEND)
                 return -ENOPROTOOPT;
@@ -976,6 +1019,7 @@ void nn_sock_report_error (struct nn_sock *self, struct nn_ep *ep, int errnum)
             self->socket_name, nn_strerror(errnum));
     }
 }
+extern int (*rw_conn_down_cb)(void *handle);
 
 void nn_sock_stat_increment (struct nn_sock *self, int name, int increment)
 {
@@ -1029,6 +1073,20 @@ void nn_sock_stat_increment (struct nn_sock *self, int name, int increment)
             nn_assert (increment > 0 ||
                 self->statistics.current_connections >= -increment);
             self->statistics.current_connections += increment;
+#if 0
+            if (self->statistics.current_connections == 0 &&
+                self->rw_handle != NULL &&
+                rw_conn_down_cb != NULL) {
+              (rw_conn_down_cb)(self->rw_handle);
+            }
+#endif
+#if 1
+            if (//self->statistics.current_connections == 0 &&
+                self->rw_connection_indication.ud != NULL &&
+                self->rw_connection_indication.fn != NULL) {
+              (self->rw_connection_indication.fn)(self->rw_connection_indication.ud, self->statistics.current_connections);
+            }
+#endif
             break;
         case NN_STAT_INPROGRESS_CONNECTIONS:
             nn_assert (increment > 0 ||

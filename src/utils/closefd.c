@@ -32,6 +32,8 @@ void nn_closefd (int fd)
 {
     int rc;
 
+    //    fprintf(stderr, "nn_closefd(fd=%d)\n", fd);
+
     rc = close (fd);
     if (nn_fast (rc == 0))
         return;

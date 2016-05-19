@@ -27,6 +27,23 @@
 
 #include <stddef.h>
 
+static const char *nn_fsm_action_strtab[] = {
+  NULL,
+  "< -1 >",
+  "NN_FSM_START",
+  "NN_FSM_STOP"
+};
+
+const char *nn_getstr_fsm_type(int type) {
+  type = -type;
+  if (type > 0 && type < (sizeof(nn_fsm_action_strtab) / sizeof(const char *))) {
+    return nn_fsm_action_strtab[type];
+  } else {
+    return "<rangeerr>";
+  }
+}
+
+
 #define NN_FSM_STATE_IDLE 1
 #define NN_FSM_STATE_ACTIVE 2
 #define NN_FSM_STATE_STOPPING 3

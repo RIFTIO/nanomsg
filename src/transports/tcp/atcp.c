@@ -20,6 +20,10 @@
     IN THE SOFTWARE.
 */
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+
 #include "atcp.h"
 
 #include "../../utils/err.h"
@@ -95,6 +99,7 @@ void nn_atcp_start (struct nn_atcp *self, struct nn_usock *listener)
 
 void nn_atcp_stop (struct nn_atcp *self)
 {
+  //  fprintf(stderr, "nn_atcp_stop()\n");
     nn_fsm_stop (&self->fsm);
 }
 
@@ -146,6 +151,8 @@ static void nn_atcp_handler (struct nn_fsm *self, int src, int type,
 
     atcp = nn_cont (self, struct nn_atcp, fsm);
 
+    //    fprintf(stderr, "FSM atcp=%p (usock=%p s=%d) src=%d type=%d\n", atcp, &atcp->usock, atcp->usock.s, src, type);
+
     switch (atcp->state) {
 
 /******************************************************************************/
@@ -180,7 +187,6 @@ static void nn_atcp_handler (struct nn_fsm *self, int src, int type,
             switch (type) {
             case NN_USOCK_ACCEPTED:
                 nn_epbase_clear_error (atcp->epbase);
-
                 /*  Set the relevant socket options. */
                 sz = sizeof (val);
                 nn_epbase_getopt (atcp->epbase, NN_SOL_SOCKET, NN_SNDBUF,
@@ -194,6 +200,9 @@ static void nn_atcp_handler (struct nn_fsm *self, int src, int type,
                 nn_assert (sz == sizeof (val));
                 nn_usock_setsockopt (&atcp->usock, SOL_SOCKET, SO_RCVBUF,
                     &val, sizeof (val));
+		val = 1;
+		nn_usock_setsockopt (&atcp->usock, IPPROTO_TCP, TCP_NODELAY,
+				     &val, sizeof (val));
 
                 /*  Return ownership of the listening socket to the parent. */
                 nn_usock_swap_owner (atcp->listener, &atcp->listener_owner);

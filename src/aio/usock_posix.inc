@@ -65,8 +65,28 @@
 #define NN_USOCK_SRC_TASK_RECV 6
 #define NN_USOCK_SRC_TASK_STOP 7
 
+static const char *nn_usock_type_strtab[] = { 
+  NULL,
+  "NN_USOCK_CONNECTED",
+  "NN_USOCK_ACCEPTED",
+  "NN_USOCK_SENT",
+  "NN_USOCK_RECEIVED",
+  "NN_USOCK_ERROR",
+  "NN_USOCK_ACCEPT_ERROR",
+  "NN_USOCK_SHUTDOWN"
+};
+
+const char *nn_getstr_usock_type(int type) {
+  if (type > 0 && type < (sizeof(nn_usock_type_strtab) / sizeof(const char *))) {
+    return nn_usock_type_strtab[type];
+  } else if (type < 0) {
+    return "<negative>";
+  } else {
+    return "0";
+  }
+}
+
 /*  Private functions. */
-static void nn_usock_init_from_fd (struct nn_usock *self, int s);
 static int nn_usock_send_raw (struct nn_usock *self, struct msghdr *hdr);
 static int nn_usock_recv_raw (struct nn_usock *self, void *buf, size_t *len);
 static int nn_usock_geterr (struct nn_usock *self);
@@ -163,13 +183,15 @@ int nn_usock_start (struct nn_usock *self, int domain, int type, int protocol)
 
     nn_usock_init_from_fd (self, s);
 
+    //fprintf(stderr, "nn_usock_start() self=%p self->s=%d\n", self, self->s);
+
     /*  Start the state machine. */
     nn_fsm_start (&self->fsm);
 
     return 0;
 }
 
-static void nn_usock_init_from_fd (struct nn_usock *self, int s)
+void nn_usock_init_from_fd (struct nn_usock *self, int s)
 {
     int rc;
     int opt;
@@ -179,7 +201,20 @@ static void nn_usock_init_from_fd (struct nn_usock *self, int s)
 
     /*  Store the file descriptor. */
     nn_assert (self->s == -1);
-    self->s = s;
+    if (1) {
+      int r = fcntl(s, F_DUPFD, 2000);
+      if (r >= 2000) {
+	self->s = r;
+	close(s);
+	//	fprintf(stderr, "nn_usock_init_from_fd(s=%d) dup to self->s=%d\n", s, self->s);
+      } else {
+	/* Oh well, we tried */
+	self->s = s;
+	//	fprintf(stderr, "nn_usock_init_from_fd(s=%d) can't dup, using self->s=%d\n", self->s);
+      }
+    } else {
+      self->s = s;
+    }
 
     /* Setting FD_CLOEXEC option immediately after socket creation is the
         second best option after using SOCK_CLOEXEC. There is a race condition
@@ -302,6 +337,32 @@ int nn_usock_listen (struct nn_usock *self, int backlog)
     return 0;
 }
 
+void nn_usock_accept_fd (struct nn_usock *self, struct nn_usock *listener, int s) 
+{
+  //fprintf(stderr, "nn_usock_accept_fd(self=%p, s=%d)\n", self, s);
+
+    /*  Start the actual accepting. */
+    if (nn_fsm_isidle(&self->fsm)) {
+        nn_fsm_start (&self->fsm);
+        nn_fsm_action (&self->fsm, NN_USOCK_ACTION_BEING_ACCEPTED);
+    }
+    nn_fsm_action (&listener->fsm, NN_USOCK_ACTION_ACCEPT);
+
+    /*  Disassociate the listener socket from the accepted
+	socket. Is useful if we restart accepting on ACCEPT_ERROR  */
+    listener->asock = NULL;
+    self->asock = NULL;
+    
+    nn_usock_init_from_fd (self, s);
+    nn_fsm_action (&listener->fsm, NN_USOCK_ACTION_DONE);
+    nn_fsm_action (&self->fsm, NN_USOCK_ACTION_DONE);
+
+    /*  Hrm? */
+    nn_worker_execute (listener->worker, &listener->task_accept);
+
+    return;
+}
+
 void nn_usock_accept (struct nn_usock *self, struct nn_usock *listener)
 {
     int s;
@@ -376,8 +437,20 @@ void nn_usock_connect (struct nn_usock *self, const struct sockaddr *addr,
     /*  Notify the state machine that we've started connecting. */
     nn_fsm_action (&self->fsm, NN_USOCK_ACTION_CONNECT);
 
+    /* Connect to fd, the provided socket is already connected */
+    if (!addr) {
+        nn_fsm_action (&self->fsm, NN_USOCK_ACTION_DONE);
+        return;
+    }
+
     /* Do the connect itself. */
+errno=0;
     rc = connect (self->s, addr, (socklen_t) addrlen);
+
+int errnowas=errno;
+//fprintf(stderr, "nn_usock_connect() connect()=%d errno=%d '%s'\n",
+//		rc, errno, strerror(errno));
+errno=errnowas;
 
     /* Immediate success. */
     if (nn_fast (rc == 0)) {
@@ -511,6 +584,8 @@ static void nn_usock_shutdown (struct nn_fsm *self, int src, int type,
 
     usock = nn_cont (self, struct nn_usock, fsm);
 
+    //    fprintf(stderr, "nn_usock_shutdown() usock->s=%d src=%d type=%d srcptr=%p\n", usock->s, src, type, srcptr);
+
     if (nn_internal_tasks (usock, src, type))
         return;
 
@@ -580,6 +655,8 @@ static void nn_usock_handler (struct nn_fsm *self, int src, int type,
     int sockerr;
 
     usock = nn_cont (self, struct nn_usock, fsm);
+
+    //    fprintf(stderr, "FSM usock=%p s=%d src=%d type=%d\n", usock, usock->s, src, type);
 
     if(nn_internal_tasks(usock, src, type))
         return;
@@ -689,6 +766,7 @@ static void nn_usock_handler (struct nn_fsm *self, int src, int type,
                     NN_USOCK_CONNECTED);
                 return;
             case NN_USOCK_ACTION_ERROR:
+	      //fprintf(stderr, "USOCK_STATE_CONNECTING / ACTION_ERROR usock=%p\n", usock);
                 nn_closefd (usock->s);
                 usock->s = -1;
                 usock->state = NN_USOCK_STATE_DONE;
@@ -708,6 +786,7 @@ static void nn_usock_handler (struct nn_fsm *self, int src, int type,
                     nn_fsm_raise (&usock->fsm, &usock->event_established,
                         NN_USOCK_CONNECTED);
                 } else {
+		  //fprintf(stderr, "USOCK_STATE_CONNECTING / FD_OUT usock=%p sockerr=%d\n", usock, sockerr);
                     usock->errnum = sockerr;
                     nn_worker_rm_fd (usock->worker, &usock->wfd);
                     rc = close (usock->s);
@@ -719,6 +798,7 @@ static void nn_usock_handler (struct nn_fsm *self, int src, int type,
                 }
                 return;
             case NN_WORKER_FD_ERR:
+	      //fprintf(stderr, "USOCK_STATE_CONNECTING / FD_ERR usock=%p\n", usock);
                 nn_worker_rm_fd (usock->worker, &usock->wfd);
                 nn_closefd (usock->s);
                 usock->s = -1;
@@ -769,6 +849,7 @@ static void nn_usock_handler (struct nn_fsm *self, int src, int type,
                 goto error;
             case NN_WORKER_FD_ERR:
 error:
+	      //fprintf(stderr, "USOCK_STATE_ACTIVE / FD_ERR error: usock=%p\n", usock);
                 nn_worker_rm_fd (usock->worker, &usock->wfd);
                 nn_closefd (usock->s);
                 usock->s = -1;
@@ -992,9 +1073,11 @@ static int nn_usock_send_raw (struct nn_usock *self, struct msghdr *hdr)
 
     /*  Handle errors. */
     if (nn_slow (nbytes < 0)) {
-        if (nn_fast (errno == EAGAIN || errno == EWOULDBLOCK))
+        if (nn_fast (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
             nbytes = 0;
         else {
+
+	  //fprintf(stderr, "nn_usock_send_raw(self->s=%d errno=%d '%s')=%d\n", self->s, errno, strerror(errno), nbytes);
 
             /*  If the connection fails, return ECONNRESET. */
             errno_assert (errno == ECONNRESET || errno == ETIMEDOUT ||
@@ -1057,6 +1140,7 @@ static int nn_usock_recv_raw (struct nn_usock *self, void *buf, size_t *len)
 
     /*  If recv request is greater than the batch buffer, get the data directly
         into the place. Otherwise, read data to the batch buffer. */
+errno=0;
     if (length > NN_USOCK_BATCH_SIZE)
         nbytes = recv (self->s, buf, length, 0);
     else
@@ -1065,13 +1149,19 @@ static int nn_usock_recv_raw (struct nn_usock *self, void *buf, size_t *len)
     /*  Handle any possible errors. */
     if (nn_slow (nbytes <= 0)) {
 
-        if (nn_slow (nbytes == 0))
+        if (nn_slow (nbytes == 0)) {
+
+	  //fprintf(stderr, "nn_usock_recv_raw(self->s=%d errno=%d '%s')=%d return -ECONNRESET\n", self->s, errno, strerror(errno), nbytes);
+
             return -ECONNRESET;
+    	}
 
         /*  Zero bytes received. */
-        if (nn_fast (errno == EAGAIN || errno == EWOULDBLOCK))
+        if (nn_fast (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
             nbytes = 0;
         else {
+
+	  //fprintf(stderr, "nn_usock_recv_raw(self->s=%d errno=%d '%s')=%d\n", self->s, errno, strerror(errno), nbytes);
 
             /*  If the peer closes the connection, return ECONNRESET. */
             errno_assert (errno == ECONNRESET || errno == ENOTCONN ||

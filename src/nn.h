@@ -288,9 +288,68 @@ NN_INLINE struct nn_cmsghdr *nn_cmsg_nexthdr_ (const struct nn_msghdr *mhdr,
 #define NN_PROTOCOL 13
 #define NN_IPV4ONLY 14
 #define NN_SOCKET_NAME 15
+  /*...*/
+#define NN_RWHANDSHAKE 31
+#define NN_RWGET_STATS 32
+#define NN_RWSET_CONN_IND 33
 
 /*  Send/recv options.                                                        */
 #define NN_DONTWAIT 1
+
+#if defined NN_HAVE_WINDOWS
+#ifndef uint64_t
+typedef unsigned __int64 uint64_t;
+#endif
+#else
+#if __WORDSIZE == 64
+typedef unsigned long int uint64_t;
+#else
+__extension__
+typedef unsigned long long int  uint64_t;
+#endif
+#endif
+
+
+struct nn_sock_stats {
+
+    /*****  The ever-incrementing counters  *****/
+
+    /*  Successfully established nn_connect() connections  */
+    uint64_t established_connections;
+    /*  Successfully accepted connections  */
+    uint64_t accepted_connections;
+    /*  Forcedly closed connections  */
+    uint64_t dropped_connections;
+    /*  Connections closed by peer  */
+    uint64_t broken_connections;
+    /*  Errors trying to establish active connection  */
+    uint64_t connect_errors;
+    /*  Errors binding to specified port  */
+    uint64_t bind_errors;
+    /*  Errors accepting connections at nn_bind()'ed endpoint  */
+    uint64_t accept_errors;
+
+    /*  Messages sent  */
+    uint64_t messages_sent;
+    /*  Messages received  */
+    uint64_t messages_received;
+    /*  Bytes sent (sum length of data in messages sent)  */
+    uint64_t bytes_sent;
+    /*  Bytes recevied (sum length of data in messages received)  */
+    uint64_t bytes_received;
+
+    /*****  Level-style values *****/
+
+    /*  Number of currently established connections  */
+    int current_connections;
+    /*  Number of connections currently in progress  */
+    int inprogress_connections;
+    /*  The currently set priority for sending data  */
+    int current_snd_priority;
+    /*  Number of endpoints having last_errno set to non-zero value  */
+    int current_ep_errors;
+
+};
 
 NN_EXPORT int nn_socket (int domain, int protocol);
 NN_EXPORT int nn_close (int s);
@@ -326,6 +385,30 @@ NN_EXPORT int nn_poll (struct nn_pollfd *fds, int nfds, int timeout);
 /******************************************************************************/
 
 NN_EXPORT int nn_device (int s1, int s2);
+
+/*  Max number of concurrent SP sockets.  Note that each takes three
+    real descriptors: two eventfds plus a real socket. */
+#define NN_MAX_SOCKETS 32768     /* Silly big for collapsed model */
+
+/*  Seems to be just for eventfd? */
+#define NN_EVENTFD_DIRECT_OFFSET   (NN_MAX_SOCKETS * 4)    /* Totally broken, eventfd fd numbers are from the process fd namespace, unrelated to nn socket count etc */
+
+struct nn_riftclosure {
+  void (*fn)(void *ud, int conns);
+  void *ud;
+};
+
+struct nn_riftconfig {
+  int singlethread;
+  int (*waitfunc)(int fd, int bits, int timeo);
+  int (*direct_cb)(int fd);
+  //int (*conn_down_cb)(void *handle);
+};
+NN_EXPORT void nn_global_init (struct nn_riftconfig *cfg);
+NN_EXPORT void nn_run_worker(void);
+NN_EXPORT void nn_worker_getfdto(int *fd, int *events, int *timeo);
+NN_EXPORT void nn_global_get_riftconfig(struct nn_riftconfig *cfg_out);
+NN_EXPORT int nn_global_singlethread();
 
 #undef NN_EXPORT
 

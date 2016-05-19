@@ -37,6 +37,7 @@
 #include "../../utils/int.h"
 
 #include <string.h>
+#include <stdio.h>
 
 #if defined NN_HAVE_WINDOWS
 #include "../../utils/win.h"
@@ -131,7 +132,7 @@ int nn_btcp_create (void *hint, struct nn_epbase **epbase)
     /*  Check whether IPv6 is to be used. */
     ipv4onlylen = sizeof (ipv4only);
     nn_epbase_getopt (&self->epbase, NN_SOL_SOCKET, NN_IPV4ONLY,
-        &ipv4only, &ipv4onlylen);
+                      &ipv4only, &ipv4onlylen);
     nn_assert (ipv4onlylen == sizeof (ipv4only));
 
     /*  Parse the address. */
@@ -164,6 +165,7 @@ static void nn_btcp_stop (struct nn_epbase *self)
 
     btcp = nn_cont (self, struct nn_btcp, epbase);
 
+    // fprintf(stderr, "nn_btcp_stop()\n");
     nn_fsm_stop (&btcp->fsm);
 }
 
@@ -247,6 +249,8 @@ static void nn_btcp_handler (struct nn_fsm *self, int src, int type,
     struct nn_atcp *atcp;
 
     btcp = nn_cont (self, struct nn_btcp, fsm);
+
+    // fprintf(stderr, "FSM btcp=%p (usock=%p s=%d) src=%d type=%d\n", btcp, &btcp->usock, btcp->usock.s, src, type);
 
     switch (btcp->state) {
 
@@ -353,22 +357,22 @@ static void nn_btcp_start_listening (struct nn_btcp *self)
     /*  Parse the address. */
     ipv4onlylen = sizeof (ipv4only);
     nn_epbase_getopt (&self->epbase, NN_SOL_SOCKET, NN_IPV4ONLY,
-        &ipv4only, &ipv4onlylen);
+                      &ipv4only, &ipv4onlylen);
     nn_assert (ipv4onlylen == sizeof (ipv4only));
     rc = nn_iface_resolve (addr, pos - addr - 1, ipv4only, &ss, &sslen);
     errnum_assert (rc == 0, -rc);
 
     /*  Combine the port and the address. */
     if (ss.ss_family == AF_INET) {
-        ((struct sockaddr_in*) &ss)->sin_port = htons (port);
-        sslen = sizeof (struct sockaddr_in);
+      ((struct sockaddr_in*) &ss)->sin_port = htons (port);
+      sslen = sizeof (struct sockaddr_in);
     }
     else if (ss.ss_family == AF_INET6) {
-        ((struct sockaddr_in6*) &ss)->sin6_port = htons (port);
-        sslen = sizeof (struct sockaddr_in6);
+      ((struct sockaddr_in6*) &ss)->sin6_port = htons (port);
+      sslen = sizeof (struct sockaddr_in6);
     }
     else
-        nn_assert (0);
+      nn_assert (0);
 
     /*  Start listening for incoming connections. */
     rc = nn_usock_start (&self->usock, ss.ss_family, SOCK_STREAM, 0);

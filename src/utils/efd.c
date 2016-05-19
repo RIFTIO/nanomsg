@@ -22,6 +22,8 @@
 
 #include "efd.h"
 
+void run_global_nn_worker(void);
+
 #if defined NN_HAVE_WINDOWS
 #include "efd_win.inc"
 #elif defined NN_HAVE_EVENTFD
@@ -40,6 +42,18 @@
 
 int nn_efd_wait (struct nn_efd *self, int timeout)
 {
+    if (nn_global_singlethread()) {
+      struct nn_riftconfig cfg;
+      nn_global_get_riftconfig(&cfg);
+      nn_assert(cfg.waitfunc);
+      int revents = cfg.waitfunc(nn_efd_getfd (self), POLLIN, timeout);
+      if (!revents) {
+        return -ETIMEDOUT;
+      } else {
+        return 0;
+      }
+    }
+    
     int rc;
     struct pollfd pfd;
 

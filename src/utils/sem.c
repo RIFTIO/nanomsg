@@ -24,6 +24,8 @@
 #include "err.h"
 #include "fast.h"
 
+extern void nn_run_worker(void);
+
 #if defined NN_HAVE_OSX
 
 void nn_sem_init (struct nn_sem *self)
@@ -155,6 +157,17 @@ void nn_sem_post (struct nn_sem *self)
 int nn_sem_wait (struct nn_sem *self)
 {
     int rc;
+
+    if (nn_global_singlethread()) {
+      int semval = 0;
+      while(1) {
+        rc=sem_getvalue(&self->sem,&semval);
+        if ((rc == 0) && (semval > 0)) {
+          break;
+        }
+        nn_run_worker();
+      }
+    }
 
     rc = sem_wait (&self->sem);
     if (nn_slow (rc < 0 && errno == EINTR))

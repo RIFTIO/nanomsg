@@ -47,6 +47,7 @@
 #include "../../utils/win.h"
 #else
 #include <unistd.h>
+#include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #endif
@@ -73,6 +74,8 @@ struct nn_ctcp {
     /*  The state machine. */
     struct nn_fsm fsm;
     int state;
+
+    int hackfd;
 
     /*  This object is a specific type of endpoint.
         Thus it is derived from epbase. */
@@ -133,6 +136,8 @@ int nn_ctcp_create (void *hint, struct nn_epbase **epbase)
     self = nn_alloc (sizeof (struct nn_ctcp), "ctcp");
     alloc_assert (self);
 
+    self->hackfd = 0;
+
     /*  Initalise the endpoint. */
     nn_epbase_init (&self->epbase, &nn_ctcp_epbase_vfptr, hint);
 
@@ -155,10 +160,21 @@ int nn_ctcp_create (void *hint, struct nn_epbase **epbase)
         nn_epbase_term (&self->epbase);
         return -EINVAL;
     }
-    rc = nn_port_resolve (colon + 1, end - colon - 1);
-    if (nn_slow (rc < 0)) {
+    if (0==strncmp(colon, ":fd", 3)) {
+      rc = nn_port_resolve (colon + 3, end - colon - 3);
+      if (nn_slow (rc < 0)) {
         nn_epbase_term (&self->epbase);
         return -EINVAL;
+      }
+
+      self->hackfd = rc;
+      goto hack;
+    } else {
+      rc = nn_port_resolve (colon + 1, end - colon - 1);
+      if (nn_slow (rc < 0)) {
+        nn_epbase_term (&self->epbase);
+        return -EINVAL;
+      }
     }
 
     /*  Check whether the host portion of the address is either a literal
@@ -179,6 +195,7 @@ int nn_ctcp_create (void *hint, struct nn_epbase **epbase)
         }
     }
 
+ hack:
     /*  Initialise the structure. */
     nn_fsm_init_root (&self->fsm, nn_ctcp_handler, nn_ctcp_shutdown,
         nn_epbase_getctx (&self->epbase));
@@ -213,7 +230,7 @@ static void nn_ctcp_stop (struct nn_epbase *self)
     struct nn_ctcp *ctcp;
 
     ctcp = nn_cont (self, struct nn_ctcp, epbase);
-
+    //fprintf(stderr, "nn_ctcp_stop()\n");
     nn_fsm_stop (&ctcp->fsm);
 }
 
@@ -277,6 +294,8 @@ static void nn_ctcp_handler (struct nn_fsm *self, int src, int type,
 
     ctcp = nn_cont (self, struct nn_ctcp, fsm);
 
+    //    fprintf(stderr, "FSM ctcp=%p (usock=%p s=%d) src=%d type=%d\n", ctcp, &ctcp->usock, ctcp->usock.s, src, type);
+
     switch (ctcp->state) {
 
 /******************************************************************************/
@@ -289,7 +308,14 @@ static void nn_ctcp_handler (struct nn_fsm *self, int src, int type,
         case NN_FSM_ACTION:
             switch (type) {
             case NN_FSM_START:
+	      if (ctcp->hackfd) {
+		nn_usock_init_from_fd (&ctcp->usock, ctcp->hackfd);
+		nn_fsm_start (&ctcp->usock.fsm);
+		/* Now leap to connecting */
+		nn_ctcp_start_connecting(ctcp, NULL, 0);
+	      } else {
                 nn_ctcp_start_resolving (ctcp);
+	      }
                 return;
             default:
                 nn_fsm_bad_action (ctcp->state, src, type);
@@ -513,6 +539,11 @@ static void nn_ctcp_start_resolving (struct nn_ctcp *self)
     int ipv4only;
     size_t ipv4onlylen;
 
+    if (self->hackfd) {
+      /* do nothing */
+      return;
+    }
+
     /*  Extract the hostname part from address string. */
     addr = nn_epbase_getaddr (&self->epbase);
     begin = strchr (addr, ';');
@@ -553,53 +584,56 @@ static void nn_ctcp_start_connecting (struct nn_ctcp *self,
     int val;
     size_t sz;
 
-    /*  Create IP address from the address string. */
-    addr = nn_epbase_getaddr (&self->epbase);
-    memset (&remote, 0, sizeof (remote));
+    if (!self->hackfd) {
 
-    /*  Parse the port. */
-    end = addr + strlen (addr);
-    colon = strrchr (addr, ':');
-    rc = nn_port_resolve (colon + 1, end - colon - 1);
-    errnum_assert (rc > 0, -rc);
-    port = rc;
+      /*  Create IP address from the address string. */
+      addr = nn_epbase_getaddr (&self->epbase);
+      memset (&remote, 0, sizeof (remote));
 
-    /*  Check whether IPv6 is to be used. */
-    ipv4onlylen = sizeof (ipv4only);
-    nn_epbase_getopt (&self->epbase, NN_SOL_SOCKET, NN_IPV4ONLY,
-        &ipv4only, &ipv4onlylen);
-    nn_assert (ipv4onlylen == sizeof (ipv4only));
+      /*  Parse the port. */
+      end = addr + strlen (addr);
+      colon = strrchr (addr, ':');
+      rc = nn_port_resolve (colon + 1, end - colon - 1);
+      errnum_assert (rc > 0, -rc);
+      port = rc;
 
-    /*  Parse the local address, if any. */
-    semicolon = strchr (addr, ';');
-    memset (&local, 0, sizeof (local));
-    if (semicolon)
+      /*  Check whether IPv6 is to be used. */
+      ipv4onlylen = sizeof (ipv4only);
+      nn_epbase_getopt (&self->epbase, NN_SOL_SOCKET, NN_IPV4ONLY,
+			&ipv4only, &ipv4onlylen);
+      nn_assert (ipv4onlylen == sizeof (ipv4only));
+
+      /*  Parse the local address, if any. */
+      semicolon = strchr (addr, ';');
+      memset (&local, 0, sizeof (local));
+      if (semicolon)
         rc = nn_iface_resolve (addr, semicolon - addr, ipv4only,
-            &local, &locallen);
-    else
+			       &local, &locallen);
+      else
         rc = nn_iface_resolve ("*", 1, ipv4only, &local, &locallen);
-    if (nn_slow (rc < 0)) {
+      if (nn_slow (rc < 0)) {
         nn_backoff_start (&self->retry);
         self->state = NN_CTCP_STATE_WAITING;
         return;
-    }
+      }
 
-    /*  Combine the remote address and the port. */
-    remote = *ss;
-    remotelen = sslen;
-    if (remote.ss_family == AF_INET)
+      /*  Combine the remote address and the port. */
+      remote = *ss;
+      remotelen = sslen;
+      if (remote.ss_family == AF_INET)
         ((struct sockaddr_in*) &remote)->sin_port = htons (port);
-    else if (remote.ss_family == AF_INET6)
+      else if (remote.ss_family == AF_INET6)
         ((struct sockaddr_in6*) &remote)->sin6_port = htons (port);
-    else
+      else
         nn_assert (0);
-
-    /*  Try to start the underlying socket. */
-    rc = nn_usock_start (&self->usock, remote.ss_family, SOCK_STREAM, 0);
-    if (nn_slow (rc < 0)) {
+      
+      /*  Try to start the underlying socket. */
+      rc = nn_usock_start (&self->usock, remote.ss_family, SOCK_STREAM, 0);
+      if (nn_slow (rc < 0)) {
         nn_backoff_start (&self->retry);
         self->state = NN_CTCP_STATE_WAITING;
         return;
+      }
     }
 
     /*  Set the relevant socket options. */
@@ -613,13 +647,21 @@ static void nn_ctcp_start_connecting (struct nn_ctcp *self,
     nn_assert (sz == sizeof (val));
     nn_usock_setsockopt (&self->usock, SOL_SOCKET, SO_RCVBUF,
         &val, sizeof (val));
+    val = 1;
+    nn_usock_setsockopt (&self->usock, IPPROTO_TCP, TCP_NODELAY,
+        &val, sizeof (val));
 
-    /*  Bind the socket to the local network interface. */
-    rc = nn_usock_bind (&self->usock, (struct sockaddr*) &local, locallen);
-    errnum_assert (rc == 0, -rc);
+    if (!self->hackfd) {
+      /*  Bind the socket to the local network interface. */
+      rc = nn_usock_bind (&self->usock, (struct sockaddr*) &local, locallen);
+      errnum_assert (rc == 0, -rc);
 
-    /*  Start connecting. */
-    nn_usock_connect (&self->usock, (struct sockaddr*) &remote, remotelen);
+      /*  Start connecting. */
+      nn_usock_connect (&self->usock, (struct sockaddr*) &remote, remotelen);
+    } else {
+      nn_usock_connect (&self->usock, NULL, 0);
+    }
+
     self->state = NN_CTCP_STATE_CONNECTING;
     nn_epbase_stat_increment (&self->epbase,
         NN_STAT_INPROGRESS_CONNECTIONS, 1);
