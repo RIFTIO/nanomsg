@@ -426,8 +426,9 @@ TRANSPORT_TESTS = \
     tests/inproc_shutdown \
     tests/ipc \
     tests/ipc_shutdown \
-    tests/tcp \
-    tests/tcp_shutdown
+    tests/tcp 
+
+#    tests/tcp_shutdown
 
 PROTOCOL_TESTS = \
     tests/pair \
